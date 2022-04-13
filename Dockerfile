@@ -1,73 +1,72 @@
-# set base os image from https://github.com/fcwu/docker-ubuntu-vnc-desktop
-FROM dorowu/ubuntu-desktop-lxde-vnc
-
-# https://ask.fedoraproject.org/t/sudo-setrlimit-rlimit-core-operation-not-permitted/4223
-RUN echo "Set disable_coredump false" >> /etc/sudo.conf
-
-
-# Installing ROS2 via Devian packages from https://index.ros.org/doc/ros2/Installation/Foxy/Linux-Install-Debians/#id10
-RUN sudo apt update \
-    && sudo apt install -y --no-install-recommends \
-    curl \
-    gnupg2 \
-    lsb-release \
-    python3-pip \
-    vim \
-    terminator \
-    git \
-    && apt autoclean -y \
-    && apt autoremove -y \
-    && rm -rf /var/lib/apt/lists/*  
-RUN sudo apt update
-RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
-RUN sudo sh -c 'echo "deb [arch=$(dpkg --print-architecture)] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2-latest.list'
-RUN sudo apt update \
-    && apt install -y ros-foxy-desktop \
-    python3-rosdep \
-    python3-colcon-common-extensions \
-    && apt autoclean -y \
-    && apt autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
-RUN sudo sh -c 'echo "source /opt/ros/foxy/setup.bash" >> ~/.bashrc'
-RUN sudo rosdep init && rosdep update
-RUN pip3 install -U argcomplete
+# adapted from: https://github.com/Tiryoh/docker-ros2-desktop-vnc
+FROM dorowu/ubuntu-desktop-lxde-vnc:focal
+LABEL maintainer="Unity Robotics <unity-robotics@unity3d.com>"
 
 ENV DEBIAN_FRONTEND noninteractive
+ENV DEV_NAME=rosdev
+ENV ROS_DISTRO=foxy
+ENV GROUP_NAME=ros
+ENV WS_NAME=colcon_ws
 
-RUN apt-get clean
-RUN apt-get update && apt-get install -y \
-    lsb  \
-    unzip \
-    wget \
-    curl \
-    sudo \
-    python3-vcstool \
-    python3-rosinstall \
-    python3-colcon-common-extensions \
-    ros-foxy-rviz2 \
-    ros-foxy-rqt \
-    ros-foxy-rqt-common-plugins \
-    devilspie \
-    xfce4-terminal
+RUN echo "Set disable_coredump false" >> /etc/sudo.conf
+RUN apt-get update -q && \
+    apt-get upgrade -yq && \
+    apt-get install -yq \
+        wget \
+        curl \
+        git \
+        build-essential \
+        vim \
+        sudo \
+        gnupg2 \
+        lsb-release \
+        locales \
+        bash-completion \
+        tzdata \
+        gosu \
+        python3-argcomplete \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN wget https://packages.osrfoundation.org/gazebo.key -O - | sudo apt-key add -; \
-    sh -c 'echo "deb http://packages.osrfoundation.org/gazebo/ubuntu-stable `lsb_release -cs` main" > /etc/apt/sources.list.d/gazebo-stable.list'
-RUN apt-get update && apt-get install -y gazebo11
+# Install the immutable components BEFORE we copy in build context stuff to keep the rebuild process manageable
+RUN apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654 && \
+    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - && \
+    echo "deb [arch=$(dpkg --print-architecture)] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > \
+        /etc/apt/sources.list.d/ros2-latest.list && \
+    apt-get update -q && \
+    apt-get install -y --no-install-recommends \
+      ros-${ROS_DISTRO}-ros-base \
+      python3-rosdep \
+      python3-colcon-common-extensions \
+      python3-vcstool \
+    && rm -rf /var/lib/apt/lists/* && rm /etc/apt/sources.list.d/ros2-latest.list
 
-ENV QT_X11_NO_MITSHM=1
+RUN useradd --create-home --home-dir /home/${DEV_NAME} --shell /bin/bash --user-group --groups adm,sudo ${DEV_NAME} && \
+    echo "$DEV_NAME:$DEV_NAME" | chpasswd && \
+    echo "$DEV_NAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+COPY --chown=${DEV_NAME} colcon_ws /home/${DEV_NAME}/colcon_ws
+COPY ros2-setup.bash /bin/ros2-setup.bash
+# Doing a second fetch of sources & apt-get update here, because these ones depend on the state of the build context
+# in our repo
+RUN apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654 && \
+    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - && \
+    echo "deb [arch=$(dpkg --print-architecture)] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > \
+        /etc/apt/sources.list.d/ros2-latest.list && \
+    apt-get update -q && \
+    rosdep init && \
+    chmod +x /bin/ros2-setup.bash && \
+    gosu ${DEV_NAME} /bin/ros2-setup.bash && \
+    runuser -u ${DEV_NAME} ros2-setup.bash && \
+    rm /bin/ros2-setup.bash && \
+    rm -rf /var/lib/apt/lists/* && rm /etc/apt/sources.list.d/ros2-latest.list
 
-ARG USERNAME=robomaker
-RUN groupadd $USERNAME
-RUN useradd -ms /bin/bash -g $USERNAME $USERNAME
-RUN sh -c 'echo "$USERNAME ALL=(root) NOPASSWD:ALL" >> /etc/sudoers'
-USER $USERNAME
+RUN echo ". /opt/ros/${ROS_DISTRO}/setup.bash" >> /home/${DEV_NAME}/.bashrc && \
+    echo ". /home/${DEV_NAME}/${WS_NAME}/install/local_setup.bash" >> /home/${DEV_NAME}/.bashrc
 
-RUN sh -c 'cd /home/$USERNAME'
+ENV TURTLEBOT3_MODEL=waffle_pi
 
-# Download and build our Robot and Simulation application
-RUN sh -c 'mkdir -p /home/robomaker/workspace'
-RUN sh -c 'cd /home/robomaker/workspace && wget https://github.com/aws-robotics/aws-robomaker-sample-application-helloworld/archive/3527834.zip && unzip 3527834.zip && mv aws-robomaker-sample-application-helloworld-3527834771373beff0ed3630c13479567db4149e aws-robomaker-sample-application-helloworld-ros2'
-RUN sh -c 'cd /home/robomaker/workspace/aws-robomaker-sample-application-helloworld-ros2'
+# To bring up tb3 simulation example (from https://navigation.ros.org/tutorials/docs/navigation2_with_slam.html)
+# cd catkin_ws && source install/setup.bash && ros2 launch nav2_bringup tb3_simulation_launch.py slam:=True
 
-RUN sudo rosdep fix-permissions
-RUN rosdep update
+# Informs the environment that the default user is not root, but instead DEV_NAME
+ENV USER ${DEV_NAME}
